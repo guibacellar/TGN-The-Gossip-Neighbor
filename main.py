@@ -4,6 +4,7 @@ import torch
 from time import time, sleep
 import numpy as np
 
+from MotionDetector import MotionDetector
 
 feeds: List[str] = [
     "http://107.0.231.40:8082/mjpg/video.mjpg?timestamp=1664917495951",
@@ -13,6 +14,80 @@ feeds: List[str] = [
     "http://136.25.107.85:8001/mjpg/video.mjpg"
 ]
 
+class CameraProcessor:
+
+    def __init__(self, url):
+
+        self._URL = url
+        self.device = 'cpu'
+        self.alarm_area = [(0, 0), (0, 0)]
+        self.motion_detector = MotionDetector(sensibility=500)
+
+    def get_video_from_url(self) -> cv2.VideoCapture:
+
+        return cv2.VideoCapture(self._URL, cv2.CAP_FFMPEG)
+
+    def click_and_crop(self, event, x, y, flags, param):
+
+        # grab references to the global variables
+        global refPt, cropping
+        # if the left mouse button was clicked, record the starting
+        # (x, y) coordinates and indicate that cropping is being
+        # performed
+        if event == cv2.EVENT_LBUTTONDOWN:
+            self.alarm_area[0] = (x, y)
+
+        if event == cv2.EVENT_LBUTTONUP:
+            self.alarm_area[1] = (x, y)
+
+    def __call__(self):
+        """
+        This function is called when class is executed, it runs the loop to read the video frame by frame,
+        and write the output into a new file.
+        :return: void
+        """
+
+        player: cv2.VideoCapture = self.get_video_from_url()
+        cv2.namedWindow("Frame")
+        cv2.setMouseCallback("Frame", self.click_and_crop)
+
+        if not player.isOpened():
+            print("Player Offline")
+            return
+
+        # Get Image Dimensions and Compute the Resize Rate to 1024x768 for Optimal Model Computation
+        width: int = int(player.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height: int = int(player.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        resize_rate: float = 1024/width
+
+        while True:
+            start_time = time()
+            ret, frame = cast(Tuple[bool, np.ndarray], player.read())
+
+            # Resize Frame to 1024
+            new_width = int(width * resize_rate)
+            new_height = int(height * resize_rate)
+            frame = cv2.resize(frame, dsize=(new_width, new_height), interpolation=cv2.INTER_AREA)
+
+            if not ret:  # Not Data
+                sleep(0.1)
+                continue
+
+            has_motion, motion_results = self.motion_detector.detect_motion(frame=frame)
+
+            if has_motion:
+                for (x, y, w, h) in motion_results:
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 1)
+
+            end_time = time()
+            fps = 1/np.round(end_time - start_time, 3)
+            print(f"Frames Per Second : {fps}")
+
+            cv2.imshow('Frame', frame)
+            if cv2.waitKey(25) & 0xFF == ord('q'):
+                break
+            sleep(0.3)
+
 class ObjectDetection:
     """
     Class implements Yolo5 model to make inferences on a youtube video using Opencv2.
@@ -20,7 +95,7 @@ class ObjectDetection:
 
     __CLASSES_TO_TRIGGER_ALARM: List[str] = [
         'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'snowboard', 'sports ball', 'skateboard',
-        'bottle', 'wine glass', 'cup', 'chair', 'tv', 'laptop', 'cell phone', 'refrigerator', 'book',
+        'bottle', 'wine glass', 'cup', 'chair', 'tv', 'laptop', 'cell phone', 'refrigerator', 'book', 'truck'
     ]
 
     def __init__(self, url, out_file="Labeled_Video.avi"):
@@ -38,12 +113,14 @@ class ObjectDetection:
         self.model.to(self.device)
         self.alarm_area=[(0, 0), (0, 0)]
 
+        self.motion_detector = MotionDetector()
+
     def get_video_from_url(self) -> cv2.VideoCapture:
         """
         Creates a new video streaming object to extract video frame by frame to make prediction on.
         :return: opencv2 video capture object, with lowest quality frame available for video.
         """
-        return cv2.VideoCapture(self._URL)
+        return cv2.VideoCapture(self._URL, cv2.CAP_FFMPEG)
 
     def load_model(self):
         """
@@ -51,7 +128,6 @@ class ObjectDetection:
         :return: Trained Pytorch model.
         """
         model = torch.hub.load('ultralytics/yolov5', 'yolov5s6', pretrained=True)
-       #model = torch.hub.load('pytorch/vision:v0.10.0', 'alexnet', pretrained=True)
         return model
 
     def score_frame(self, frame: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -188,6 +264,8 @@ class ObjectDetection:
                 sleep(0.1)
                 continue
 
+
+
             results_labels = self.score_frame(frame)
             frame = self.plot_boxes(results_labels, frame)
             end_time = time()
@@ -203,5 +281,5 @@ class ObjectDetection:
 
 
 # Create a new object and execute.
-a = ObjectDetection(feeds[4]) # 4
+a = CameraProcessor(feeds[3]) # 4
 a()
